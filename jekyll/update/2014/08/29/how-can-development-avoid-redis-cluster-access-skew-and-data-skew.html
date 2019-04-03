@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html>
+  <head>
+  <meta charset="utf-8">
+  <!-- (1) Optimize for mobile versions: http://goo.gl/EOpFl -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- (1) force latest IE rendering engine: bit.ly/1c8EiC9 -->
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+
+  <title>如何避免redis集群数据倾斜和访问倾斜</title>
+  <meta name="description" content="概述redis 集群部署方式大部分采用类 Twemproxy 的方式进行部署。即通过 Twemproxy 对 redis key 进行分片计算，将 redis key 进行分片计算，分配到多个 redis 实例中的其中一个。tewmproxy 架构图如下：" />
+
+  <meta name="HandheldFriendly" content="True" />
+  <meta name="MobileOptimized" content="320" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:site" content="@ZhangAkay" />
+    <meta name="twitter:title" content="如何避免redis集群数据倾斜和访问倾斜" />
+    <meta name="twitter:image" content="http://localhost:4000/assets/images/akay.jpg" />
+    
+    <meta name="twitter:description"  content="概述redis 集群部署方式大部分采用类 Twemproxy 的方式进行部署。即通过 Twemproxy 对 redis key 进行分片计算，将 redis key 进行分片计算，分配到多个 redis 实例中的其中一个。tewmproxy 架构图如下：" />
+    
+  
+  
+  <meta property="og:site_name" content="akay`s blog" />
+  <meta property="og:title" content="如何避免redis集群数据倾斜和访问倾斜"/>
+  
+  <meta property="og:description" content="概述redis 集群部署方式大部分采用类 Twemproxy 的方式进行部署。即通过 Twemproxy 对 redis key 进行分片计算，将 redis key 进行分片计算，分配到多个 redis 实例中的其中一个。tewmproxy 架构图如下：" />
+  
+  <meta property="og:image" content="http://localhost:4000/assets/images/akay.jpg" />
+  <meta property="og:url" content="http://localhost:4000/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew.html" >
+  <meta property="og:type" content="blog" />
+  <meta property="article:published_time" content="2014-08-29T22:34:25+08:00">
+
+  <link rel="canonical" href="http://localhost:4000/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew.html"/>
+  <link rel="shortcut icon" href="/assets/images/favicon.png" type="image/png"/>
+  <link rel="stylesheet" href="//brick.a.ssl.fastly.net/Linux+Libertine:400,400i,700,700i/Open+Sans:400,400i,700,700i">
+  <link href="//maxcdn.bootstrapcdn.com/font-awesome/4.2.0/css/font-awesome.min.css" rel="stylesheet">
+
+  <link rel="stylesheet" type="text/css" media="screen" href="/css/main.css" />
+  <link rel="stylesheet" type="text/css" media="print" href="/css/print.css" />
+</head>
+
+  <body itemscope itemtype="http://schema.org/Article">
+    <!-- header start -->
+
+
+  <a href="http://localhost:4000" class="logo-readium"><span class="logo" style="background-image: url(/assets/images/akay.jpg)"></span></a>
+
+<!-- header end -->
+
+    <main class="content" role="main">
+      <article class="post">
+        
+        <div class="noarticleimage">
+          <div class="post-meta">
+            <h1 class="post-title">如何避免redis集群数据倾斜和访问倾斜</h1>
+            <div class="cf post-meta-text">
+              <div class="author-image" style="background-image: url(/assets/images/akay.jpg)">Blog Logo</div>
+              <h4 class="author-name" itemprop="author" itemscope itemtype="http://schema.org/Person"></h4>
+              on
+              <time datetime="2014-08-29T22:34:25+08:00">29 Aug 2014</time>
+              <!-- , tagged on <span class="post-tag-">, <a href="/tag/"></a></span> -->
+            </div>
+          </div>
+        </div>
+        <br>
+        <br>
+        <br>
+        
+        <section class="post-content">
+          <div class="post-reading">
+            <span class="post-reading-time"></span> read
+          </div>
+          <a name="topofpage"></a>
+          <h1 id="概述">概述</h1>
+<p>redis 集群部署方式大部分采用类 Twemproxy 的方式进行部署。即通过 Twemproxy 对 redis key 进行分片计算，将 redis key 进行分片计算，分配到多个 redis 实例中的其中一个。tewmproxy 架构图如下：
+<img src="/assets/article_images/2018-12-09-how-can-development-avoid-redis-cluster-access-skew-and-data-skew/twemproxy.png" alt="" /></p>
+
+<p>由于 Twemproxy 背后的多个 redis 实例在内存配置和 cpu 配置上都是一致的，所以一旦出现访问量倾斜或者数据量倾斜，则可能会导致某个 redis 实例达到性能瓶颈，从而使整个集群达到性能瓶颈。</p>
+
+<h2 id="hot-key出现造成集群访问量倾斜">hot key出现造成集群访问量倾斜</h2>
+<p><em>Hot key</em>，即热点 key，指的是在一段时间内，该 key 的访问量远远高于其他的 redis key， 导致大部分的访问流量在经过 proxy 分片之后，都集中访问到某一个 redis 实例上。hot key 通常在不同业务中，存储着不同的热点信息。比如</p>
+<ol>
+  <li>新闻应用中的热点新闻内容；</li>
+  <li>活动系统中某个用户疯狂参与的活动的活动配置；</li>
+  <li>商城秒杀系统中，最吸引用户眼球，性价比最高的商品信息；
+……</li>
+</ol>
+
+<h3 id="解决方案">解决方案</h3>
+<h4 id="1-使用本地缓存">1. 使用本地缓存</h4>
+<p>在 client 端使用本地缓存，从而降低了redis集群对hot key的访问量，但是同时带来两个问题：1、如果对可能成为 hot key 的 key 都进行本地缓存，那么本地缓存是否会过大，从而影响应用程序本身所需的缓存开销。2、如何保证本地缓存和redis集群数据的有效期的一致性。
+针对这两个问题，先不展开讲，先将第二个解决方案。</p>
+
+<h4 id="2-利用分片算法的特性对key进行打散处理">2. 利用分片算法的特性，对key进行打散处理</h4>
+<p>我们知道 hot key 之所以是 hot key，是因为它只有一个key，落地到一个实例上。所以我们可以给hot key加上前缀或者后缀，把一个hotkey 的数量变成 redis 实例个数N的倍数M，从而由访问一个 redis key  变成访问 N * M 个redis key。
+N*M 个 redis key 经过分片分布到不同的实例上，将访问量均摊到所有实例。</p>
+
+<p>代码如下：</p>
+<pre><code class="language-Golang">//redis 实例数
+const M = 16
+
+//redis 实例数倍数（按需设计，2^n倍，n一般为1到4的整数）
+const N = 2
+
+func main() {
+//获取 redis 实例 
+	c, err := redis.Dial("tcp", "127.0.0.1:6379")
+	if err != nil {
+		fmt.Println("Connect to redis error", err)
+		return
+	}
+	defer c.Close()
+
+	hotKey := "hotKey:abc"
+	//随机数
+	randNum := GenerateRangeNum(1, N*M)
+	//得到对 hot key 进行打散的 key
+	tmpHotKey := hotKey + "_" + strconv.Itoa(randNum)
+	
+	//hot key 过期时间
+	expireTime := 50
+	
+	//过期时间平缓化的一个时间随机值
+	randExpireTime := GenerateRangeNum(0, 5)
+
+	data, err := redis.String(c.Do("GET", tmpHotKey))
+	if err != nil {
+		data, err = redis.String(c.Do("GET", hotKey))
+		if err != nil {
+			data = GetDataFromDb()
+			c.Do("SET", "hotKey", data, expireTime)
+			c.Do("SET", tmpHotKey, data, expireTime + randExpireTime)
+		} else {
+			c.Do("SET", tmpHotKey, data, expireTime + randExpireTime)
+		}
+	}
+}
+
+</code></pre>
+<p>在这个代码中，通过一个大于等于 1 小于 M * N 的随机数，得到一个 tmp key，程序会优先访问tmp key，在得不到数据的情况下，再访问原来的 hot key，并将 hot key的内容写回 tmp key。值得注意的是，tmp key的过期时间是 hot key 的过期时间加上一个较小的随机正整数，保证在 hot key 过期时，所有 tmp key 不会同时过期而造成缓存雪崩。这是一种通过坡度过期的方式来避免雪崩的思路，同时也可以利用原子锁来写入数据就更加的完美，减小db的压力。</p>
+
+<p>另外还有一件事值得一提，默认情况下，我们在生成 tmp key的时候，会把随机数作为 hot key 的后缀，这样符合redis的命名空间，方便 key 的收归和管理。但是存在一种极端的情况，就是hot key的长度很长，这个时候随机数不能作为后缀添加，原因是 Twemproxy 的分片算法在计算过程中，越靠前的字符权重越大，考后的字符权重则越小。也就是说对于key名，前面的字符差异越大，算出来的分片值差异也越大，更有可能分配到不同的实例（具体算法这里不展开讲）。所以，对于很长 key 名的 hot key，要对随机数的放入做谨慎处理，比如放在在最后一个命令空间的最前面（eg：由原来的 space1:space2:space3_rand 改成 space1:space2:rand_space3）。</p>
+
+<h2 id="big-key-造成集群数据量倾斜">big key 造成集群数据量倾斜</h2>
+<p><em>big key</em> ，即数据量大的 key ，由于其数据大小远大于其他key，导致经过分片之后，某个具体存储这个 big key 的实例内存使用量远大于其他实例，造成，内存不足，拖累整个集群的使用。big key 在不同业务上，通常体现为不同的数据，比如：</p>
+<ol>
+  <li>论坛中的大型持久盖楼活动；</li>
+  <li>聊天室系统中热门聊天室的消息列表；
+……</li>
+</ol>
+
+<h3 id="解决方案-1">解决方案</h3>
+<h4 id="对-big-key-进行拆分">对 big key 进行拆分</h4>
+<p>对 big key 存储的数据 （big value）进行拆分，变成value1，value2… valueN, 通过 mset 的方式，将这个 key 的内容打散到各个实例中，减小big key 对数据量倾斜造成的影响。</p>
+<div class="highlighter-rouge"><div class="highlight"><pre class="highlight"><code>//存
+mset key1, vlaue1, key2, vlaue2 ... keyN, valueN
+//取
+mget key1, key2 ... keyN
+</code></pre></div></div>
+
+<ol>
+  <li>
+    <p>如果big value 是个大list，可以拆成将list拆成。= list_1， list_2, list3, listN</p>
+  </li>
+  <li>
+    <p>其他数据类型同理。</p>
+  </li>
+</ol>
+
+<h2 id="既是big-key-也是-hot-key">既是big key 也是 hot key</h2>
+<p>在开发过程中，有些 key 不只是访问量大，数据量也很大，这个时候就要考虑这个 key 使用的场景，存储在redis集群中是否是合理的，是否使用其他组件来存储更合适；如果坚持要用 redis 来存储，可能考虑迁移出集群，采用一主一备（或1主多备）的架构来存储。</p>
+
+<h2 id="其他">其他</h2>
+<h3 id="如何发现-hot-keybig-key">如何发现 hot key，big key</h3>
+<h4 id="1-事前-预判">1. 事前-预判</h4>
+<p>在业务开发阶段，就要对可能变成 hot key ，big key 的数据进行判断，提前处理，这需要的是对产品业务的理解，对运营节奏的把握，对数据设计的经验。</p>
+
+<h4 id="2事中-监控和自动处理">2.事中-监控和自动处理</h4>
+<h5 id="监控">监控</h5>
+<ol>
+  <li>在应用程序端，对每次请求 redis 的操作进行收集上报;不推荐，但是在运维资源缺少的场景下可以考虑。开发可以绕过运维搞定）；</li>
+  <li>在proxy层，对每一个 redis 请求进行收集上报;（推荐，简单直接影响小）</li>
+  <li>对 redis 实例使用monitor命令统计热点key（不推荐，高并发条件下会有造成redis 内存爆掉的隐患）；</li>
+  <li>机器层面，Redis客户端使用TCP协议与服务端进行交互，通信协议采用的是RESP。如果站在机器的角度，可以通过对机器上所有Redis端口的TCP数据包进行抓取完成热点key的统计（不推荐，公司每台机器上的基本组件已经很多了，别再添乱了）；</li>
+</ol>
+
+<h5 id="自动处理">自动处理</h5>
+<p>通过监控之后，程序可以获取 big key 和 hot key，再报警的同时，程序对 big key 和 hot key 进行自动处理。或者通知程序猿利用一定的工具进行定制化处理（在程序中对特定的key 执行前面提到的解决方案）</p>
+
+<h4 id="3事后">3.事后</h4>
+<p>尽量还是不要事后了吧，都是血和泪的教训，不展开讲。</p>
+
+<p>谢谢阅读，欢迎交流。</p>
+
+
+        </section>
+        <footer class="post-footer">
+          <section class="share">
+            
+              
+                <a class="icon-twitter" href="http://twitter.com/share?text=%E5%A6%82%E4%BD%95%E9%81%BF%E5%85%8Dredis%E9%9B%86%E7%BE%A4%E6%95%B0%E6%8D%AE%E5%80%BE%E6%96%9C%E5%92%8C%E8%AE%BF%E9%97%AE%E5%80%BE%E6%96%9C&amp;url=http://localhost:4000/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew"
+                  onclick="window.open(this.href, 'twitter-share', 'width=550,height=255');return false;">
+                <i class="fa fa-twitter"></i><span class="hidden">twitter</span>
+                </a>
+              
+            
+              
+            
+          </section>
+        </footer>
+        <div class="bottom-teaser cf">
+          <div class="isLeft">
+            <h5 class="index-headline featured"><span>Written by</span></h5>
+            <section class="author">
+              <div class="author-image" style="background-image: url(/assets/images/akay.jpg)">Blog Logo</div>
+              <h4>akay zhang</h4>
+              <p class="bio"></p>
+              <hr>
+              <p class="published">Published <time datetime="2014-08-29 22:34">29 Aug 2014</time></p>
+            </section>
+          </div>
+          
+          <div class="isRight">
+            <h5 class="index-headline featured"><span>Supported by</span></h5>
+            <footer class="site-footer">
+              <section class="poweredby">Proudly published with <a href="http://jekyllrb.com"> Jekyll</a></section>
+              <a class="subscribe" href="/feed.xml"> <span class="tooltip"> <i class="fa fa-rss"></i> You should subscribe to my feed.</span></a>
+              <div class="inner">
+                <section class="copyright">All content copyright <a href="/">akay zhang</a> &copy; 2019<br>All rights reserved.</section>
+              </div>
+            </footer>
+          </div>
+        </div>
+        
+      </article>
+    </main>
+    <div class="bottom-closer">
+      <div class="background-closer-image"  style="background-image: url(/assets/images/cA4aKEIPQrerBnp1yGHv_IMG_9534-3-2.jpg)">
+        Image
+      </div>
+      <div class="inner">
+        <h1 class="blog-title">akay`s blog</h1>
+        <h2 class="blog-description">akay记录工作地方的栖息地
+</h2>
+        <a href=/ class="btn">Back to Overview</a>
+      </div>
+    </div>
+    <script src="https://code.jquery.com/jquery-1.11.1.min.js"></script>
+<script type="text/javascript" src="/assets/js/jquery.fitvids.js"></script>
+<script type="text/javascript" src="/assets/js/index.js"></script>
+<script type="text/javascript" src="/assets/js/readingTime.min.js"></script>
+<script>
+(function ($) {
+  "use strict";
+  $(document).ready(function(){
+
+    var $window = $(window),
+    $image = $('.post-image-image, .teaserimage-image');
+    
+      $window.on('scroll', function() {
+        var top = $window.scrollTop();
+
+        if (top < 0 || top > 1500) { return; }
+        $image
+          .css('transform', 'translate3d(0px, '+top/3+'px, 0px)')
+          .css('opacity', 1-Math.max(top/700, 0));
+      });
+      $window.trigger('scroll');
+
+      var height = $('.article-image').height();
+      $('.post-content').css('padding-top', height + 'px');
+
+      $('a[href*=#]:not([href=#])').click(function() {
+        if (location.pathname.replace(/^\//,'') == this.pathname.replace(/^\//,'')
+         && location.hostname == this.hostname) {
+          var target = $(this.hash);
+          target = target.length ? target : $('[name=' + this.hash.slice(1) +']');
+          if (target.length) {
+            $('html,body').animate({ scrollTop: target.offset().top }, 500);
+            return false;
+          }
+        }
+      });
+
+  });
+}(jQuery));
+</script>
+
+
+  </body>
+</html>
