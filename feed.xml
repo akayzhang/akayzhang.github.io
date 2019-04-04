@@ -4,10 +4,10 @@
     <title>akay`s blog</title>
     <description>akay记录工作地方的栖息地
 </description>
-    <link>http://blog.akay.wang/</link>
-    <atom:link href="http://blog.akay.wang/feed.xml" rel="self" type="application/rss+xml" />
-    <pubDate>Thu, 04 Apr 2019 11:41:04 +0800</pubDate>
-    <lastBuildDate>Thu, 04 Apr 2019 11:41:04 +0800</lastBuildDate>
+    <link>https://blog.akay.wang/</link>
+    <atom:link href="https://blog.akay.wang/feed.xml" rel="self" type="application/rss+xml" />
+    <pubDate>Thu, 04 Apr 2019 11:49:58 +0800</pubDate>
+    <lastBuildDate>Thu, 04 Apr 2019 11:49:58 +0800</lastBuildDate>
     <generator>Jekyll v3.7.4</generator>
     
       <item>
@@ -135,8 +135,8 @@ mget key1, key2 ... keyN
 
 </description>
         <pubDate>Fri, 29 Aug 2014 22:34:25 +0800</pubDate>
-        <link>http://blog.akay.wang/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew.html</link>
-        <guid isPermaLink="true">http://blog.akay.wang/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew.html</guid>
+        <link>https://blog.akay.wang/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew.html</link>
+        <guid isPermaLink="true">https://blog.akay.wang/jekyll/update/2014/08/29/how-can-development-avoid-redis-cluster-access-skew-and-data-skew.html</guid>
         
         <category>redis</category>
         
